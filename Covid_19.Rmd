@@ -1,0 +1,385 @@
+---
+title: "Covid_19 cases"
+author: "W.G."
+date: "2023-08-17"
+output: html_document
+---
+# Analyzing the covid_19 data 
+
+## Introduction
+
+This document aims to provide a comprehensive analysis of COVID-19 data compiled from various reputable sources, including the Johns Hopkins GitHub repository for case and fatality statistics, and the Oxford University GitHub repository for containment and health indices. Through the application of exploratory data analysis and data visualization techniques, our objective is to unveil meaningful insights and discern patterns inherent in the dataset. 
+
+# Importing Required Libraries
+```{r}
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+```
+
+# Step 1: Data Import
+
+## Saving Addresses 
+
+### Johns Hopkins GitHub URL and file names
+```{r}
+JH_url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+
+JH_file_names <- c(
+"time_series_covid19_confirmed_global.csv", 
+"time_series_covid19_deaths_global.csv")
+
+JH_URL <- str_c(JH_url_in, JH_file_names)
+
+JH_UID <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+
+```
+
+### University of Oxford GitHub URL
+the Containment Index includes containment and closure policies, and health system policies, but excludes vaccination
+```{r}
+OX_url_in <- "https://raw.githubusercontent.com/OxCGRT/covid-policy-dataset/main/data/timeseries_indices/OxCGRT_timeseries_ContainmentHealthIndex_v1.csv"
+```
+
+
+## Loading the Data
+```{r}
+global_cases <- read_csv(JH_URL[1]) #reading global cases
+global_deaths <- read_csv(JH_URL[2]) # reding global death
+UID <- read_csv(JH_UID) # reading world population by country
+CONT <- read_csv (OX_url_in) # reading Containment and closure Policies by country
+```
+
+# Step 2: Tidy and Transform Data
+
+## Tidy Global Cases data
+```{r}
+global_cases <- global_cases %>% pivot_longer (cols = -c('Province/State', 'Country/Region', 'Lat', 'Long'), names_to = 'date', values_to = "cases") %>% select (-c('Province/State', 'Lat', 'Long'))
+```
+### unifying date format
+```{r}
+global_cases <- global_cases %>% mutate(date = mdy(date))
+print(global_cases)
+```
+
+## Tidy global death Data
+```{r}
+global_deaths <- global_deaths %>% pivot_longer (cols = -c('Province/State', 'Country/Region', 'Lat', 'Long'), names_to = 'date', values_to = "deaths") %>% select (-c('Province/State','Lat', 'Long'))
+```
+### unifying date format
+```{r}
+global_deaths <- global_deaths %>% mutate(date = mdy(date))
+print(global_deaths)
+```
+
+## Tidy population Data
+```{r}
+UID <- UID %>% select(c( Province_State, Country_Region, Population))
+UID <- UID %>% drop_na(Population)
+UID <-UID %>% group_by(Country_Region) %>% summarise(Population = max(Population))
+print(UID)
+```
+
+## Tidy the containment and health indices data
+```{r}
+CONT <- CONT %>% pivot_longer (cols = -c('CountryCode', 'CountryName', 'RegionCode', 'RegionName', 'CityCode', 'CityName', 'Jurisdiction'), names_to = 'date', values_to = "Containment") %>% select (-c('CountryCode', 'RegionCode', 'RegionName', 'CityCode', 'CityName', 'Jurisdiction'))
+```
+### Rename the country region to match with the other data
+```{r}
+CONT <- CONT %>% rename (Country_Region = 'CountryName')
+```
+### Modifying date format
+```{r}
+CONT <- CONT %>% mutate(date = dmy(date))
+print(CONT)
+```
+
+## Merging the data collected
+### Merge the number of cases with the death cases
+```{r}
+global <- global_cases %>% full_join (global_deaths, relationship = "many-to-many") %>% rename (Country_Region = 'Country/Region')
+```
+
+### Adding to the merge the containment Health Index data
+```{r}
+global <- global %>% left_join(CONT, relationship = "many-to-many") 
+```
+
+### Adding to the merge the Population data
+```{r}
+global <- global %>% left_join(UID, relationship = "many-to-many") 
+global_sum <- global %>% group_by(Country_Region, date) %>% summarise(deaths = max(deaths), cases = max(cases), population = max(Population))
+print(global)
+```
+
+## Preparing the data for visualization
+###Group the total cases, total death, and population by country
+```{r}
+by_country <- global %>% select(-c(date))
+
+by_country <- by_country %>% drop_na()
+
+by_country <-by_country %>% group_by(Country_Region) %>% summarise(cases = max(cases), deaths = max(deaths), containment = mean(Containment), Population = max(Population))
+
+by_country["death_per_million"] <- c(by_country$deaths/by_country$Population *1000000)
+print(by_country)
+```
+
+## Filtering the data relating to Norway, and greece The highest and lowest mortality in western europ
+```{r}
+Norway <- filter(global, Country_Region== "Norway")
+Greece <- filter(global, Country_Region== "Greece")
+```
+
+### Grouping per week
+Using weekly averaging to smooths out sudden spikes and accommodates reporting delays. This approach ensures that we get a more consistent and reliable view of how things change over time. By grouping several days' worth of cases and deaths into a weekly summary, we create a more stable and manageable dataset. This stability is crucial for accurate data analysis and helps us see the bigger picture of how trends are evolving.
+
+```{r}
+# Convert the date column to Date format
+Norway$date <- as.Date(Norway$date)
+Greece$date <- as.Date(Greece$date)
+
+# Calculate new cases and new deaths per day Norway
+Norway$new_cases <- c(diff(Norway$cases), 1)
+Norway$new_deaths <- c(diff(Norway$deaths), 1)
+
+# Calculate new cases and new deaths per day Greece
+Greece$new_cases <- c(diff(Greece$cases), 1)
+Greece$new_deaths <- c(diff(Greece$deaths), 1)
+
+# Group by week and calculate weekly new cases and new deaths for Norway
+Norway_weekly <- Norway %>%
+  group_by(week_start = floor_date(date, unit = "week")) %>%
+  reframe(
+    week_end = week_start + days(6),
+    weekly_new_cases = sum(new_cases),
+    weekly_new_deaths = sum(new_deaths),
+    weekly_Containment = mean(Containment)
+  )
+
+# Group by week and calculate weekly new cases and new deaths for Greece
+Greece_weekly <- Greece %>%
+  group_by(week_start = floor_date(date, unit = "week")) %>%
+  reframe(
+    week_end = week_start + days(6),
+    weekly_new_cases = sum(new_cases),
+    weekly_new_deaths = sum(new_deaths),
+    weekly_Containment = mean(Containment)
+  )
+
+# Drop rows with missing values
+Norway_weekly <- Norway_weekly %>% drop_na()
+Greece_weekly <- Greece_weekly %>% drop_na()
+
+print (Norway_weekly)
+print (Greece_weekly)
+```
+
+
+## selecting the 3 highest and 3 lowest europian countries in terms of average containment index over the corona pendamic
+```{r}
+Lo_Hi_by_country <- by_country[c(141, 111, 40, 52, 8, 57, 59, 73),]
+print(Lo_Hi_by_country)
+```
+
+## Grouping the data by date
+```{r}
+global_count <- global_sum %>% group_by(date) %>% summarise(deaths = sum(deaths), cases = sum(cases))
+print(global_count)
+```
+
+# Step 3:  Visualizing the data
+
+## Evaluating the Death per Million Compared to the Average Containment Measures Index
+we will attempt to evaluate the effectiveness of the containment measure adopted in europ in terms of impact on reducing the mortality rates. 
+
+```{r}
+ Lo_Hi_by_country %>% 
+  ggplot() + 
+  geom_bar(aes(x = reorder(Country_Region, death_per_million), y = death_per_million),
+           stat = "identity", fill = "blue") +
+  geom_bar(aes(x = reorder(Country_Region, containment), y = -(containment - 25) * 50),
+           stat = "identity", fill = "red") +
+  labs(title = "Death per Million & the Average Containment Measure",
+       x = "Country", y = "Death/mil. & The Average Containment Measure") +
+  theme(axis.text.y = element_blank()) +  # Hide y-axis text
+  geom_text(aes(x = reorder(Country_Region, death_per_million),
+                y = death_per_million,
+                label = round(death_per_million, 2)),
+            vjust = -0.5, color = "black", size = 3) +
+  geom_text(aes(x = reorder(Country_Region, containment),
+                y = -containment,
+                label = round(containment, 2)),
+            vjust = 1, color = "black", size = 3)
+```
+
+When examining the death rates per million in relation to containment measures, it becomes apparent that stricter measures do not necessarily lead to lower mortality rates. For instance, analyzing Norway reveals that despite having comparatively lenient containment measures, the country boasts remarkably low mortality rates. Conversely, Greece, despite implementing stringent containment measures, faces challenges with respect to mortality rates.
+
+This dichotomy indicates that additional factors beyond containment measures influence these outcomes. Factors such as vaccination rates, the age distribution of the population, and overall population adherence to guidelines likely play significant roles. It's important to recognize that these observations are not exhaustive and other variables could be at play as well. To gain a comprehensive understanding, a multifaceted analysis that considers a wide array of factors is necessary.
+
+## Evaluating the containment measure vs number of cases and death in Greece, and Norway.
+We will attempt to asses if the containment measures were implemented in response to Covid_19 waives or as preventive measure.
+
+
+### Norway cases vs Containment
+```{r}
+
+ggplot(Norway_weekly, aes(x = week_start)) +
+  geom_line(aes(y = weekly_new_cases, color = "New Cases"), linetype = "solid", linewidth = 0.4) +
+  geom_line(aes(y = weekly_Containment * 1000, color = "Containment"), linetype = "solid", linewidth = 0.4) +
+  labs(
+    title = "Norway Case",
+    x = "Date",
+    y = "New Cases"
+  ) +
+  theme_minimal() +
+  theme(axis.text.y = element_blank()) +
+  scale_y_continuous(limits = c(0, NA)) +
+  scale_color_manual(
+    values = c("blue", "green"),
+    labels = c("Containment", "New Cases")
+  ) +
+  scale_linetype_manual(
+    values = "none",  # Remove linetype legend entries
+    guide = guide_legend(override.aes = list(linetype = 0))
+  ) +
+  theme(legend.position = "top")
+
+```
+
+
+### Norway Death vs Containment
+```{r}
+ggplot(Norway_weekly, aes(x = week_start)) +
+  geom_line(aes(y = weekly_new_deaths, color = "New Deaths"), linetype = "solid", linewidth = 0.4) +
+  geom_line(aes(y = weekly_Containment*3, color = "Containment"), linetype = "solid", linewidth = 0.4) +
+  labs(
+    title = "Norway Case",
+    x = "Date",
+    y = "New Deaths"
+  ) +
+  theme_minimal() +
+  theme(axis.text.y = element_blank()) +
+  scale_y_continuous(limits = c(0, NA)) +
+  
+  scale_color_manual(
+    values = c("blue", "red"),
+    labels = c("Containment", "New Deaths")
+  ) +
+  scale_linetype_manual(
+    values = "none",  # Remove linetype legend entries
+    guide = guide_legend(override.aes = list(linetype = 0))
+  ) +
+  theme(legend.position = "top")
+
+```
+
+
+
+### Greece New Cases vs Containment
+```{r}
+
+ggplot(Greece_weekly, aes(x = week_start)) +
+  geom_line(aes(y = weekly_new_cases, color = "New Cases"), linetype = "solid", linewidth = 0.4) +
+  geom_line(aes(y = weekly_Containment*2000, color = "Containment"), linetype = "solid", linewidth = 0.4) +
+  labs(
+    title = "Greece New Case Vs Containment",
+    x = "Date",
+    y = "New Cases"
+  ) +
+  theme_minimal() +
+  theme(axis.text.y = element_blank()) +
+  scale_y_continuous(limits = c(0, NA)) +
+
+  scale_color_manual(
+    values = c("blue", "green"),
+    labels = c("Containment", "New Cases")
+  ) +
+  scale_linetype_manual(
+    values = "none",  # Remove linetype legend entries
+    guide = guide_legend(override.aes = list(linetype = 0))
+  ) +
+  theme(legend.position = "top")
+
+```
+
+### Greece cases
+```{r}
+ggplot(Greece_weekly, aes(x = week_start)) +
+  geom_line(aes(y = weekly_Containment*5, color = "Containment"), linetype = "solid", linewidth = 0.4) +
+  geom_line(aes(y = weekly_new_deaths, color = "New Deaths"), linetype = "solid", linewidth = 0.4) +
+  labs(
+    title = "Greece New Death Vs Containment",
+    x = "Date",
+    y = "New Death"
+  ) +
+  theme_minimal() +
+  theme(axis.text.y = element_blank()) +
+  scale_y_continuous(limits = c(0, NA)) +
+
+  scale_color_manual(
+    values = c("blue", "red"),
+    labels = c("Containment", "New Deaths")
+  ) +
+  scale_linetype_manual(
+    values = "none",  # Remove linetype legend entries
+    guide = guide_legend(override.aes = list(linetype = 0))
+  ) +
+  theme(legend.position = "top")
+
+```
+
+Looking at the data, it's evident that containment measures played a crucial role in controlling the spread of COVID-19 in terms of the number of cases for both Greece and Norway. There's a noticeable spike in cases around mid-2022 when the measures were partially lifted.
+Interestingly, in the case of Greece, the mortality rates don't seem to be influenced by the containment measures, which is a bit puzzling and requires further investigation.
+Another point to note is that the strength of the containment measures directly impacted the spread of COVID-19. We can see that even a slight reduction in the measures led to an increase in the number of cases. This emphasizes the direct connection between measures taken and the disease's spread.
+
+
+### Global cases and death
+```{r}
+  ggplot(global_count, aes(x = date)) +
+  geom_line(aes(y = cases, color = " Cases"), linetype = "solid", linewidth = 0.4)+
+  geom_line(aes(y = deaths, color = "Deaths"), linetype = "solid", linewidth = 0.4)
+```
+
+
+# Step 4: Modeling Daily Cases Over the Years
+
+## Visualizing Deaths Over Time with Linear Regression Line
+
+```{r}
+ggplot(global_count, aes(x = date, y = deaths)) +
+  geom_point() +  # Add scatter plot points
+  geom_smooth(method = "lm", se = FALSE, color = "red") +  # Add linear regression line
+  labs(
+    title = "Deaths Over Time with Linear Regression Line",
+    x = "Date",
+    y = "Deaths"
+  ) +
+  theme_minimal()
+```
+
+## Visualizing Cases Over Time with Linear Regression Line
+
+```{r}
+ggplot(global_count, aes(x = date, y = cases)) +
+  geom_point() +  # Add scatter plot points
+  geom_smooth(method = "lm", se = FALSE, color = "red") +  # Add linear regression line
+  labs(
+    title = "Cases Over Time with Linear Regression Line",
+    x = "Date",
+    y = "Cases"
+  ) +
+  theme_minimal()
+```
+
+The linear model performs well in forecasting the patterns of disease spread and mortality rates. However, it does exhibit deviations at the beginning and end, which is understandable due to the evolving nature of the pandemic, including its conclusion.
+
+# Step 5 Identify Bias
+Before starting this study, I believed that stricter contingency measures would always lead to lower mortality rates. However, this belief turned out to be incorrect. Now that I've reviewed the results, I understand that numerous other factors play a role. Disease spread is a complex issue influenced by social factors, and predicting anything related to human behavior is extremely challenging.
+
+# Step 6 Conclusion
+The data showed that things are more complicated. It's not just about how strict the rules are. Other things like how many people got vaccinated, the ages of the population, and how the healthcare system works all play a part. It's like a big puzzle with many pieces. This makes it hard to predict how the disease will spread and how many people will die.
+
+Another tricky part is that human behavior is a big factor. How people act, follow safety rules, and even how they go about their daily lives affects the disease. Predicting what people will do is really tough, like trying to find your way in a confusing maze. The study results have shown that because people act in unexpected ways, it's hard to make exact models.
+
+In the end, this study taught me that while rules do matter, there's a lot more to consider. Everything happening around us, how people behave, and how society works all shape what happens with the disease. It's like a big mix of things, and understanding it all is quite a challenge.
